@@ -1,0 +1,387 @@
+---
+title: "REPR"
+author: "Dmitry Karpov"
+date: '13.02.2017 '
+output: html_document
+---
+
+The text should be TRANSFORMED to the one NUMERIC VECTOR using WORD ONE-HOT ENCODING. That will make a search much faster as we will use which instead of grep. So we will be able to enlarge our datasets to use stupid backoff, which will lead to the better precision.
+
+```{r}
+f<-function(NumVec)#numeric vector is an input with length,say,3 words: on output there must be indices of the words in NumVec
+{Nums1<-Nums
+  for(i in 1:length(NumVec)-1)
+  {
+  
+  List<-which(Nums1==NumVec[i])
+  Nums1<-Nums1[List+1]
+  }
+    
+    
+
+}
+```
+```{r}
+
+setwd("D://")
+URL<-"https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+dir<-paste(getwd(),"/a.zip",sep="")#get url
+download.file(URL,dir)#upload file
+unzip(dir)#unzip file
+```
+
+```{r}
+library(snow)
+library(rJava)
+library(gdata)
+library(tm)
+library(SnowballC)
+library(qdap)
+library(ggplot2)
+library(Matrix)
+library(RWeka)
+library(SnowballC)
+library(stringi)
+library(slam)
+library(dplyr)
+library(foreach)
+library(doSNOW)
+library(text2vec)
+cluster <- makeCluster(4, type = "SOCK", outfile="")
+registerDoSNOW(cluster)
+set.seed(1)
+cont_EnBlogs<-readLines("D://final//en_US//en_US.blogs.txt")
+cont_EnNews<-readLines("D://final//en_US//en_US.news.txt")
+cont_EnTwitter<-readLines("D://final//en_US//en_US.twitter.txt")
+cont<-c(cont_EnBlogs,cont_EnNews,cont_EnTwitter)
+cont<-removeNumbers(tolower(stripWhitespace(removePunctuation(cont,TRUE))))
+cont<-sapply(cont, stringi::stri_trans_general, "latin-ascii")#replace latin letters with closest
+cont<-iconv(cont, "latin1", "ASCII", sub="")#remove others
+rvect<-1:length(cont)
+TestIndex<-sample(rvect,200)
+cont_test<-cont[TestIndex]#test set
+names(cont_test)<-sapply(cont_test,last)#names are answers
+cont_test<-sapply(cont_test,AllButLast)#removing last word as program needs to guess them
+cont<-cont[-TestIndex]#training set
+names(cont)<-NULL
+#M<-TestPerformance(cont_test)
+rm(cont_EnBlogs)
+rm(cont_EnNews)
+rm(cont_EnTwitter)
+
+#if ENGLISH
+#dtm<-DocumentTermMatrix(VCorpus(VectorSource(cont)))#I EXHAUSTED MEMORY WHILE DOING IT
+#then we use these matrixes
+
+MaxLength<-5
+MinNumTerms<-1# by experimental method minNumterms from 1 to 20 almost doesn't make a difference in terms of accuracy
+CollocLength<<-NULL
+cont_cached<<-NULL
+
+```
+
+
+```{r}
+TextGenerator<-function(seed,N)#knowing the first word(s) (seed) we add N words to them using text generator
+{
+  for (i in (1:N))
+  {
+    seed<-PredictNextWord(seed)
+  }
+  seed
+}
+last<-function(str)#last word from string
+{
+  str<-as.character(str)
+  str<-stripWhitespace(str)
+  ans<-strsplit(str," ")[[1]][length(strsplit(str," ")[[1]])]
+  if(!is.na(ans))
+  {
+    if(ans=="")
+    {
+      ans<-strsplit(str," ")[[1]][length(strsplit(str," ")[[1]])-1]
+    }
+  }
+  ans
+}
+firstbigram<-function(str)
+{
+  str<-as.character(str)
+  str<-stripWhitespace(str)
+  ans<- strsplit(str," ")[[1]][1]
+  ans1<-strsplit(str," ")[[1]][2]
+  if(!is.na(ans))
+  {
+    if(ans=="")
+    {
+     ans<- strsplit(str," ")[[1]][2]
+     ans1<-strsplit(str," ")[[1]][3]
+    }
+    ans<-paste(ans,ans1,sep=" ")
+  }
+  ans
+}
+firststop<-function(str)#counts first word for any char vects, even for stopwords
+{
+ str<-as.character(str)
+ str<-stripWhitespace(str)
+ ans<- strsplit(str," ")[[1]][1]
+ if(!is.na(ans))
+ {
+   if(ans=="")
+   {
+     ans<- strsplit(str," ")[[1]][2]
+   }
+ }
+ ans
+}
+first<-function(str)#counts first word ONLY IF it is not stopword, else it counts first two words
+{
+  str<-as.character(str)
+  str<-stripWhitespace(str)
+  ans<- strsplit(str," ")[[1]][1]
+  if(!is.na(ans))
+  {
+    if(ans=="")
+    {
+      ans<- strsplit(str," ")[[1]][2]
+    }
+  }
+  ans
+}
+AllButLast<-function(str)#remove last word
+{
+  str<-stripWhitespace(str)
+  str3<-strsplit(str," ")[[1]]
+  str3<-str3[1:(length(str3)-1)]
+  str3<-paste(str3,collapse=" ")
+  str3
+}
+LastWords<-function(str,Num)#extract only last Num words. NOTE - str should not finish on whitespace
+{
+  str<-stripWhitespace(str)
+  str3<-strsplit(str," ")[[1]]
+  str3<-str3[(length(str3)+1-Num):length(str3)]
+  str2<-paste(str3,collapse=" ")
+  str2
+}
+WordCount<-function(str)
+{
+  
+  m<-strsplit(str," ")[[1]]
+  m<-m[m!=""]
+  length(m)
+}
+#table of frequencies
+
+
+ChooseFromVariants<-function(str,Variants)
+{
+  str2 <- gsub(' {2,}',' ',str)
+  #str2<-gsub("^.*\\.","", str2)
+  str3<-paste(" ",LastWords(str2,2)," ",sep="")#subset last 2 words
+  cont_cached<-cont[grep(str3,cont,fixed=TRUE)]
+  if(length(Variants)!=4)
+  {
+    print("Wrong number of variants")
+  }
+  for(i in 1:length(Variants))
+  {
+    Variants[i]<-removePunctuation(tolower(Variants[i]))
+  }
+  Variants<-Variants[Variants!=""]
+  Tab<-PredictNext(str,TRUE)#make a frequency table
+  #now we have table AND variable CollocLength
+  str<-removePunctuation(tolower(str),TRUE)
+  for (i in 1:4)
+  {
+    Variants[i]<-paste("^",Variants[i],"$",sep="")#we search only exact matches
+  }
+  Var1<-paste(Variants,collapse="|")
+  Tab<-Tab[grep(Var1,Tab$word),]#extract only probabilities of variants offered
+  
+  while((dim(Tab))[1]==0|length(Tab$prob)!=1)#if we have no options<-back off once more
+  {
+    CollocLength<-CollocLength-1
+    str<-LastWords(str,CollocLength)
+    Tab<-rbind(Tab,Candidates(str,cont_cached))
+    Tab<-Tab[grep(Var1,Tab$word),]
+    Tab<-Tab[order(Tab$prob,decreasing=TRUE),]
+    Tab<-Tab[Tab$prob==Tab$prob[1],]
+  }
+  ans<-Tab$word[1]
+  as.character(ans)
+}
+ 
+PredictNext<-function(string)
+{
+  string<-replaceFunction(string,repl)
+UsedWords<-strsplit(string,split=" ")[[1]]
+UsedWords<-UsedWords[UsedWords!=""]
+#UsedWords<-Words[length(Words)-MaxLength+1:length(Words)]
+for (i in 1: length(UsedWords))
+{UsedWords[i]<-rowNames[[UsedWords[i]]]}
+UsedWords<-as.numeric(UsedWords)
+# having now numeric vector
+a<-which(Nums==UsedWords[length(UsedWords)])
+Nums1<-Nums[a+1]#words with anything after the current one
+Vec<-rep(T, length(a))
+K<-1
+Vec1<-rep(T, length(a))
+Vec2<-rep(T, length(a))
+Vec3<-rep(T, length(a))
+Vec4<-rep(T, length(a))#weak place, but we will barely need to back off more than 5 times anyway
+while(length(Vec[Vec])>0&K<length(UsedWords))# is designed to look at the minimal index where there are some precise co-occurences)
+{
+Vec4<-Vec3
+Vec3<-Vec2
+Vec2<-Vec1
+Vec1<-Vec #vec is a vector of truthness of Ngram co-occurences on this step, Vecq on previous, Vec2 on pre-previous and Vec3 on pre-pre-previous and so on
+Vec<-Vec&(Nums[a-K]==UsedWords[length(UsedWords)-K]) # on each step we update our previous vector of truth, pre-previous and so on
+K=K+1
+}
+Vect<-data.frame(Vec1,Vec2,Vec3,Vec4)#merge all previous vectors into a list
+i<-1
+while(length(Vect[,i][Vect[,i]])!=length(Vect[,i]))
+{
+  Vec<-cbind(Vec,Vect[,i])
+  i<-i+1
+}
+Tab1<-NULL
+for(i in 1:dim(Vec)[2])
+{
+Tab<-table(Nums1[Vec[,i]])
+Tab<-Tab*0.4^i# we assign score for each matches
+Tab1<-c(Tab1,Tab)
+}
+library(plyr)
+if(length(Tab1)==0)
+{
+Frame<-NULL
+}
+if(length(Tab1)>0)
+{
+Frame<-data.frame(word=names(Tab1), score=Tab1)
+Frame<-aggregate(score~word,Frame,sum)
+Frame<-Frame[order(Frame$score,decreasing=T),]
+Frame<-Frame[Frame$word!="1",]
+Frame$word<-as.character(Frame$word)#factor should be FIRST transformed as character and only THEN as numeric
+Frame$word<-rownames(m0)[as.numeric(Frame$word)]
+}
+Frame
+}
+
+
+TestPerformance<-function(cont_test)#makes simple test comparing predicted end of phrase with the real one
+{
+  
+  
+ 
+  Acc<-1:20#we measure how number of threshold words for each backoff step reflects accuracy on the test sample of 200 examples
+  names(Acc)<-Acc
+  for(j in 1:20)
+  {
+    MinNumTerms<<-j
+    count<-0
+    perf<-0
+    for (i in 1:length(cont_test))
+    {
+      print(paste0("Attempt number ",i," MinNumTerms ",j))
+      print(paste0(cont_test[i]," ?"))
+      perf[i]<-PredictNext(cont_test[i])
+      print(paste0("Program answered ",last(perf[i])," Correct answer ",names(cont_test[i])))
+      if(!is.na(perf[i]))
+      {
+        if(last(perf[i])==names(cont_test[i]))
+        {
+          count=count+1
+          
+        }
+        print(paste0("Number of correct answers ",count))
+      }
+    }
+     Acc[j]<-count/length(cont_test)
+    print(paste0("Share of right answers ",Acc[j]))
+  }
+ 
+  
+  Acc
+}
+Test<-function(cont_test)
+{
+  MinNumTerms<<-30
+   count<-0
+  perf<-0
+  for (i in 1:length(cont_test))
+  {
+    print(paste0("Attempt number ",i))
+    print(paste0(cont_test[i]," ?"))
+    perf[i]<-PredictNext(cont_test[i])
+    print(paste0("Program answered ",last(perf[i])," Correct answer ",names(cont_test[i])))
+    if(last(perf[i])==names(cont_test[i]))
+    {
+      count=count+1
+      print(paste0("Number of correct answers ",count))
+    }
+  
+  }
+  ans<-count/length(cont_test)
+  print(paste0("Share of POTENTIALLY right answers ",ans))
+}
+
+Tests<-function()
+  set.seed(1)
+{#timing tests
+  system.time({PredictNext("The guy in front of me just bought a pound of bacon, a bouquet, and a case of")})
+  system.time({PredictNext("If this isn't the cutest thing you've ever seen, then you must be")})
+  system.time({PredictNext("Hey sunshine, can you follow me and make me the")})
+  system.time({PredictNext("Be grateful for the good times and keep the faith during the")})
+  system.time({PredictNext("After the ice bucket challenge Louis will push his long wet hair out of his eyes with his little")})
+  system.time({PredictNext("Ohhhhh #PointBreak is on tomorrow. Love that film and haven't seen it in quite some")})
+  system.time({PredictNext("Well I'm pretty sure my granny has some old bagpipes in her garage I'll dust them off and be on my")})
+  system.time({PredictNext("Go on a romantic date at the")})
+  system.time({PredictNext("Very early observations on the Bills game: Offense still struggling but the")})
+  
+  print(ChooseFromVariants("The guy in front of me just bought a pound of bacon, a bouquet, and a case of",c("soda","beer","cheese","pretzels")))#+
+  print(ChooseFromVariants("You're the reason why I smile everyday. Can you follow me please? It would mean the",c("most","best","world","universe")))#+
+  print(ChooseFromVariants("Hey sunshine, can you follow me and make me the",c("bluest","smelliest","saddest","happiest")))
+   print(ChooseFromVariants("Very early observations on the Bills game: Offense still struggling but the",c("defense","crowd","players","referees")))#ÎØÈÁÊÀ
+  print(ChooseFromVariants("Go on a romantic date at the",c("beach","movies","mall","grocery")))#ÎØÈÁÊÀ
+  print(ChooseFromVariants("Well I'm pretty sure my granny has some old bagpipes in her garage I'll dust them off and be on my",c("horse","way","motorcycle","phone")))#more precisely look at it
+  print(ChooseFromVariants("Ohhhhh #PointBreak is on tomorrow. Love that film and haven't seen it in quite some",c("time","weeks","thing","years")))#+
+  print(ChooseFromVariants("After the ice bucket challenge Louis will push his long wet hair out of his eyes with his little",c("eyes","toes","ears","fingers")))
+ print( ChooseFromVariants("Be grateful for the good times and keep the faith during the",c("sad","hard","worse","bad")))
+ print( ChooseFromVariants("If this isn't the cutest thing you've ever seen, then you must be",c("asleep","insane","callous","insensitive")))
+ 
+ 
+ #NEXT QUIZ
+ 
+ 
+  print( ChooseFromVariants("When you breathe, I want to be the air for you. I'll be there for you, I'd live and I'd",c("eat","sleep","die","give")))
+print( ChooseFromVariants("Guy at my table's wife got up to go to the bathroom and I asked about dessert and he started telling me about his",c("financial","spiritual","horticultural","marital")))
+print( ChooseFromVariants("I'd give anything to see arctic monkeys this",c("weekend","morning","month","decade")))#+
+print( ChooseFromVariants("Talking to your mom has the same effect as a hug and helps reduce your",c("sleepiness","happiness","stress","hunger")))#+
+print( ChooseFromVariants("When you were in Holland you were like 1 inch away from me but you hadn't time to take a",c("walk","picture","minute","look")))#+
+print( ChooseFromVariants("I'd just like all of these questions answered, a presentation of evidence, and a jury to settle the",c("matter","case","incident","account")))
+print( ChooseFromVariants("I can't deal with unsymetrical things. I can't even hold an uneven number of bags of groceries in each",c("toe","hand","arm","finger")))#+
+print( ChooseFromVariants("Every inch of you is perfect from the bottom to the",c("top","middle","side","center")))
+print( ChooseFromVariants("I’m thankful my childhood was filled with imagination and bruises from playing",c("daily","inside","outside","weekly")))#+
+print( ChooseFromVariants(" 
+I like how the same people are in almost all of Adam Sandler's",c("pictures","movies","stories","novels")))#attention to this and to number 64 from cont_test
+}
+
+
+```
+
+```{r}
+#parallel?
+l<-length(cont)
+con<-list(cont[(1):(as.integer(l/4))],cont[as.integer(l/4+1):(as.integer(l/2))],cont[(as.integer(l/2+1)):(as.integer(3*l/4))],cont[(as.integer(3*l/4+1)):l])
+M<-NULL
+for(i in 1:4)
+{M<-c(M,grep(str,con[[i]],fixed=TRUE))}
+str<-"right there"
+A<-list(1:100)
+system.time({for (i in 1:4) {A[[i]]<-grep(str,con[[i]],fixed=TRUE)}})
+system.time({foreach( i=1:4) %dopar%{A[[i]]<-grep(str,con[[i]],fixed=TRUE)}})
+```
